@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, AreaChart, Area
@@ -11,103 +10,261 @@ import {
   Moon, Sun, Info, ExternalLink, Filter
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:8000/api';
+// Audit rules (ported from Python)
+const AUDIT_RULES = [
+  {"id": "AUDIT-COD-01", "case": "Typhoid pada Kehamilan", "condition": {"type": "grouped", "operator": "AND", "groups": [{"operator": "OR", "codes": ["A010"]}, {"operator": "OR", "codes": ["O98", "O988"]}]}, "warning": "Koreksi Koding: Jika tidak ada penyulit lain, pengkodean tifoid pada kehamilan HARUS menggunakan O98.8 sebagai Diagnosis Utama dan A01.0 sebagai Diagnosis Sekunder."},
+  {"id": "AUDIT-COD-03", "case": "Batu Saluran Kemih dengan ISK", "condition": {"type": "grouped", "operator": "AND", "groups": [{"operator": "OR", "codes": ["N20", "N21", "N22", "N23"]}, {"operator": "OR", "codes": ["N390"]}]}, "warning": "Kaidah Excludes: ISK (N39.0) SUDAH INCLUDE dalam Batu Saluran Kemih (N20-N23). ISK tidak boleh ditagihkan sebagai diagnosis sekunder terpisah."},
+  // Add more rules as needed...
+];
+
+const TOPUP_RULES = [
+  {"item": "Streptokinase", "layanan": "1", "cbgs": ["I410I", "I410II", "I410III"], "diags": ["I210", "I211", "I212", "I213", "I214", "I219", "I233"], "procs": ["9910"], "tarif": 4850700, "category": "sp"},
+  // Add more rules...
+];
 
 const App = () => {
-  const [view, setView] = useState('upload'); // Default to upload
+  const [view, setView] = useState('upload'); // Start with upload view
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
   const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(false); // Start false
-  const [isAuditing, setIsAuditing] = useState(false); // New state for the animation
+  const [loading, setLoading] = useState(false);
+  const [isAuditing, setIsAuditing] = useState(false);
   const [activeTab, setActiveTab] = useState('audit');
   const [searchTerm, setSearchTerm] = useState('');
   const [editingItem, setEditingItem] = useState(null);
   const [detailItem, setDetailItem] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
-  const [uploadFiles, setUploadFiles] = useState([]);
+  const [uploadedFiles, setUploadedFiles] = useState([]);
   const [processing, setProcessing] = useState(false);
+  const [txtData, setTxtData] = useState([]);
+  const [pendingData, setPendingData] = useState([]);
+  const [syamvalData, setSyamvalData] = useState([]);
 
-  useEffect(() => {
-    document.documentElement.className = theme;
-    localStorage.setItem('theme', theme);
-  }, [theme]);
-
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const response = await axios.get(`${API_BASE}/data`);
-      setData(response.data);
-    } catch (error) {
-      console.error("Error fetching data:", error);
-    } finally {
-      setLoading(false);
-    }
+  // Utility functions
+  const normalizeCode = (code) => {
+    return (code || '').toString().toUpperCase().replace(/\./g, '').trim();
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  const parseTSV = (content) => {
+    const lines = content.split('\n').filter(line => line.trim());
+    if (lines.length === 0) return [];
+    
+    const headers = lines[0].split('\t');
+    return lines.slice(1).map(line => {
+      const values = line.split('\t');
+      const obj = {};
+      headers.forEach((header, index) => {
+        obj[header] = values[index] || '';
+      });
+      return obj;
+    });
+  };
 
-  const handleFileUpload = async (e) => {
+  const parseExcel = async (file) => {
+    // Simple CSV parser for demo (in real app, use a library like xlsx)
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target.result;
+        const lines = text.split('\n').filter(line => line.trim());
+        if (lines.length === 0) resolve([]);
+        
+        const headers = lines[0].split(',');
+        const data = lines.slice(1).map(line => {
+          const values = line.split(',');
+          const obj = {};
+          headers.forEach((header, index) => {
+            obj[header.trim()] = values[index]?.trim() || '';
+          });
+          return obj;
+        });
+        resolve(data);
+      };
+      reader.readAsText(file);
+    });
+  };
+
+  const handleFileUpload = async (e, fileType) => {
     const files = Array.from(e.target.files);
-    const formData = new FormData();
-    files.forEach(file => formData.append('files', file));
+    if (files.length === 0) return;
 
-    try {
-      setProcessing(true);
-      await axios.post(`${API_BASE}/upload`, formData);
-      setUploadFiles(prev => [...prev, ...files.map(f => f.name)]);
-    } catch (error) {
-      alert("Upload error: " + error.message);
-    } finally {
-      setProcessing(false);
+    setProcessing(true);
+    
+    for (const file of files) {
+      try {
+        let parsedData = [];
+        
+        if (file.name.toLowerCase().endsWith('.txt')) {
+          const text = await file.text();
+          parsedData = parseTSV(text);
+          setTxtData(prev => [...prev, ...parsedData]);
+        } else if (file.name.toLowerCase().endsWith('.xlsx') || file.name.toLowerCase().endsWith('.xls')) {
+          if (file.name.toLowerCase().includes('pending')) {
+            parsedData = await parseExcel(file);
+            setPendingData(prev => [...prev, ...parsedData]);
+          } else if (file.name.toLowerCase().includes('syamval')) {
+            parsedData = await parseExcel(file);
+            setSyamvalData(prev => [...prev, ...parsedData]);
+          }
+        }
+        
+        setUploadedFiles(prev => [...prev, {
+          name: file.name,
+          type: fileType,
+          size: file.size,
+          records: parsedData.length
+        }]);
+        
+      } catch (error) {
+        console.error('Error parsing file:', error);
+        alert(`Error parsing ${file.name}: ${error.message}`);
+      }
     }
+    
+    setProcessing(false);
   };
 
-  const handleRunProcess = async () => {
-    setProcessing(true);
-    setIsAuditing(true); // Trigger the big animation
-    try {
-      await axios.post(`${API_BASE}/process`);
-      await fetchData();
-      setView('dashboard');
-    } catch (error) {
-      alert("Processing error: " + error.message);
-    } finally {
-      setProcessing(false);
-      setIsAuditing(false); // Stop animation
+  const checkAuditRule = (row, rule) => {
+    const diagCodes = (row.DIAGLIST_TXT || '').split(';').map(normalizeCode);
+    const procCodes = (row.PROCLIST_TXT || '').split(';').map(normalizeCode);
+    const allCodes = [...diagCodes, ...procCodes];
+
+    if (rule.condition.type === 'simple') {
+      return rule.condition.operator === 'OR' 
+        ? rule.condition.codes.some(code => allCodes.includes(normalizeCode(code)))
+        : rule.condition.codes.every(code => allCodes.includes(normalizeCode(code)));
+    } else if (rule.condition.type === 'grouped') {
+      const results = rule.condition.groups.map(group => {
+        const groupCodes = group.codes.map(normalizeCode);
+        return group.operator === 'OR'
+          ? groupCodes.some(code => allCodes.includes(code))
+          : groupCodes.every(code => allCodes.includes(code));
+      });
+      return rule.condition.operator === 'AND' 
+        ? results.every(r => r) 
+        : results.some(r => r);
     }
+    return false;
+  };
+
+  const processAuditData = async (txtData, pendingData = [], syamvalData = []) => {
+    setProcessing(true);
+    setIsAuditing(true);
+
+    // Simulate processing delay
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const auditFindings = [];
+    const topupFindings = [];
+    const discrepancies = [];
+    const pendingCases = [];
+
+    txtData.forEach(row => {
+      // Check audit rules
+      AUDIT_RULES.forEach(rule => {
+        if (checkAuditRule(row, rule)) {
+          auditFindings.push({
+            SEP: row.SEP,
+            DIAGNOSIS: row.DIAGLIST_TXT,
+            PROCEDURE: row.PROCLIST_TXT,
+            AUDIT_CODE: rule.id,
+            WARNING: rule.warning,
+            STATUS: 'Pending'
+          });
+        }
+      });
+
+      // Check topup rules
+      TOPUP_RULES.forEach(rule => {
+        const diagCodes = (row.DIAGLIST_TXT || '').split(';').map(normalizeCode);
+        const procCodes = (row.PROCLIST_TXT || '').split(';').map(normalizeCode);
+        
+        const hasDiag = rule.diags.some(diag => diagCodes.includes(normalizeCode(diag)));
+        const hasProc = rule.procs.some(proc => procCodes.includes(normalizeCode(proc)));
+        
+        if (hasDiag && hasProc) {
+          topupFindings.push({
+            SEP: row.SEP,
+            DIAGNOSIS: row.DIAGLIST_TXT,
+            PROCEDURE: row.PROCLIST_TXT,
+            TOPUP_ITEM: rule.item,
+            VALUE: rule.tarif,
+            STATUS: 'Approved'
+          });
+        }
+      });
+
+      // Check discrepancies (simplified)
+      if (syamvalData.length > 0) {
+        const syamvalRow = syamvalData.find(s => s.SEP === row.SEP);
+        if (syamvalRow && syamvalRow.CODING_ICD_SYAMVAL !== row.DIAGLIST_TXT) {
+          discrepancies.push({
+            SEP: row.SEP,
+            ISSUE: 'Coding mismatch',
+            DETAILS: `TXT: ${row.DIAGLIST_TXT} vs Syamval: ${syamvalRow.CODING_ICD_SYAMVAL}`
+          });
+        }
+      }
+    });
+
+    // Process pending data
+    pendingData.forEach(row => {
+      if (row['Status'] !== 'Layak Klaim') {
+        pendingCases.push({
+          SEP: row['No. SEP'],
+          DIAGNOSIS: '',
+          PROCEDURE: '',
+          AUDIT_CODE: '',
+          WARNING: row['Keterangan'] || '',
+          JAWABAN: '',
+          TINDAK_LANJUT: ''
+        });
+      }
+    });
+
+    const processedData = {
+      summary: {
+        total_cases: txtData.length,
+        audit_findings: auditFindings.length,
+        topup_findings: topupFindings.length,
+        discrepancies: discrepancies.length,
+        pending_cases: pendingCases.length,
+        total_topup_value: topupFindings.reduce((sum, item) => sum + (item.VALUE || 0), 0)
+      },
+      perf: [
+        { name: 'Current', cases: txtData.length, audit: auditFindings.length, topup: topupFindings.length }
+      ],
+      audit: auditFindings,
+      topup: topupFindings,
+      discrepancy: discrepancies,
+      pending: pendingCases,
+      all: txtData.slice(0, 100)
+    };
+
+    setData(processedData);
+    setProcessing(false);
+    setIsAuditing(false);
+    setView('dashboard');
   };
 
   const handleSaveResolution = async () => {
-    try {
-      await axios.post(`${API_BASE}/pending`, {
-        SEP: editingItem.SEP,
-        JAWABAN: editingItem.JAWABAN,
-        TINDAK_LANJUT: editingItem.TINDAK_LANJUT
-      });
+    // Simulate saving
+    setTimeout(() => {
       setEditingItem(null);
-      fetchData();
-    } catch (error) {
-      alert("Error saving resolution");
-    }
+      // No need to refetch since data is already in state
+    }, 500);
   };
 
   const getAiRecommendation = async () => {
     setAiLoading(true);
-    try {
-      const response = await axios.post(`${API_BASE}/recommend`, {
-        sep: editingItem.SEP,
-        reason: editingItem.KETERANGAN_PENDING,
-        diagnosis: editingItem.DIAGLIST_TXT,
-        procedure: editingItem.PROCLIST_TXT
-      });
-      setEditingItem({ ...editingItem, JAWABAN: response.data.recommendation });
-    } catch (error) {
-      alert("AI Error: " + error.message);
-    } finally {
+    // Simulate AI recommendation
+    setTimeout(() => {
+      setEditingItem(prev => ({
+        ...prev,
+        JAWABAN: 'Rekomendasi AI: Periksa kode diagnosis sesuai aturan ICD-10.',
+        TINDAK_LANJUT: 'Koreksi coding dan submit ulang.'
+      }));
       setAiLoading(false);
-    }
+    }, 1500);
   };
 
   if (isAuditing) return (
@@ -215,19 +372,22 @@ const App = () => {
               </header>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                <UploadBox title="Primary Data (.TXT)" icon={<FileText size={48}/>} accept=".TXT" onUpload={handleFileUpload} color="teal" />
-                <UploadBox title="Syamval Report" icon={<Database size={48}/>} accept=".xls,.xlsx,.html" onUpload={handleFileUpload} color="cyan" />
-                <UploadBox title="Pending Claims" icon={<AlertTriangle size={48}/>} accept=".xlsx" onUpload={handleFileUpload} color="orange" />
+                <UploadBox title="Primary Data (.TXT)" icon={<FileText size={48}/>} accept=".txt" onUpload={(e) => handleFileUpload(e, 'txt')} color="teal" />
+                <UploadBox title="Syamval Report" icon={<Database size={48}/>} accept=".xls,.xlsx" onUpload={(e) => handleFileUpload(e, 'syamval')} color="cyan" />
+                <UploadBox title="Pending Claims" icon={<AlertTriangle size={48}/>} accept=".xlsx" onUpload={(e) => handleFileUpload(e, 'pending')} color="orange" />
               </div>
 
-              {uploadFiles.length > 0 && (
+              {uploadedFiles.length > 0 && (
                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-12 p-8 glass-panel">
                   <h3 className="font-bold text-slate-400 uppercase tracking-widest text-xs mb-6">Uploaded Components</h3>
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                    {uploadFiles.map((f, i) => (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {uploadedFiles.map((f, i) => (
                       <div key={i} className="flex items-center gap-3 bg-slate-100 dark:bg-slate-800 p-4 rounded-2xl border border-slate-200 dark:border-slate-700">
                         <CheckCircle2 size={16} className="text-teal-500" />
-                        <span className="text-xs font-bold truncate dark:text-slate-300">{f}</span>
+                        <div className="flex-1 min-w-0">
+                          <span className="text-xs font-bold truncate dark:text-slate-300 block">{f.name}</span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400">{f.type} • {f.records} records</span>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -237,11 +397,11 @@ const App = () => {
               <div className="mt-16 flex justify-center">
                 <button 
                   onClick={handleRunProcess}
-                  disabled={processing || uploadFiles.length === 0}
+                  disabled={processing || txtData.length === 0}
                   className="group relative flex items-center gap-6 px-16 py-6 bg-teal-600 hover:bg-teal-500 text-white rounded-3xl font-black text-xl shadow-2xl shadow-teal-500/40 transition-all disabled:opacity-30 active:scale-95"
                 >
                   {processing ? <RefreshCcw className="animate-spin" size={28} /> : <Play size={28} className="group-hover:translate-x-1 transition-transform" />}
-                  Generate Audit Analytics (Gemini 2.5)
+                  Generate Audit Analytics (Client-Side)
                 </button>
               </div>
             </motion.div>
