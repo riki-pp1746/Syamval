@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$*.py
+.venv
+venv/
+ENV/
+
+# Data Files (Clinical Privacy)
+*.TXT
+*.txt
+*.xlsx
+*.xls
+*.html
+*.json
+!package.json
+!pending_resolutions.json
+
+# Node
+node_modules/
+dist/
+dist-ssr
+*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
